@@ -1,0 +1,130 @@
+name: Build Madeira IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/madeira-ios.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: madeira-ipad-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 350
+    env:
+      JOBS: '2'
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - name: Check out the IPA build contribution at a fixed revision
+        uses: actions/checkout@v4
+        with:
+          repository: JMRBDev/Madeira
+          ref: ef496822ca427b4b000eaf7c78d3a570e23182e1
+          path: source
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Record build environment
+        run: |
+          mkdir -p build-logs
+          {
+            uname -a
+            xcodebuild -version
+            xcrun --sdk iphoneos --show-sdk-version
+            df -h .
+            git rev-parse HEAD
+            git submodule status --recursive
+          } | tee build-logs/environment.txt
+          test "$(uname -m)" = arm64 || {
+            echo 'This build requires an Apple Silicon macOS runner.'
+            exit 1
+          }
+          echo "ROOT=$PWD" >> "$GITHUB_ENV"
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: Install build tools and check bundled resources
+        run: |
+          brew install cmake ninja meson pkg-config autoconf automake libtool bison flex sevenzip llvm xxd 2>&1 | tee build-logs/dependencies.log
+          bash tools/check-prefix-template.sh app/Madeira/prefix-template.tar.gz
+          xcodebuild -list -project app/Madeira.xcodeproj
+
+      - name: Prepare the Windows cross compiler
+        run: bash scripts/build/setup-llvm-mingw.sh 2>&1 | tee build-logs/mingw.log
+
+      - name: Build Wine host tools and headers
+        run: bash scripts/build/build-wine.sh 2>&1 | tee build-logs/wine.log
+
+      - name: Build the FEX CPU translator for iOS
+        run: bash scripts/build/build-fex-ios.sh 2>&1 | tee build-logs/fex.log
+
+      - name: Build iOS support libraries
+        run: |
+          bash scripts/build/build-freetype-ios.sh 2>&1 | tee build-logs/freetype.log
+          bash build/gnutls-ios/build.sh 2>&1 | tee build-logs/gnutls.log
+          bash scripts/build/sync-gnutls-libs.sh
+          bash build/wineserver/bootstrap.sh 2>&1 | tee build-logs/wineserver-bootstrap.log
+          bash build/wineserver/build.sh 2>&1 | tee build-logs/wineserver.log
+          bash build/ntdll-unix/build.sh 2>&1 | tee build-logs/ntdll.log
+          bash build/win32u-unix/build.sh 2>&1 | tee build-logs/win32u.log
+
+      - name: Build LLVM for the graphics translator
+        run: bash scripts/build/build-llvm-ios.sh 2>&1 | tee build-logs/llvm.log
+
+      - name: Build Metal shaders and DXMT
+        run: |
+          if ! xcrun -sdk macosx metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          bash scripts/build/build-shader-headers.sh 2>&1 | tee build-logs/shaders.log
+          bash scripts/build/build-dxmt-ios.sh 2>&1 | tee build-logs/dxmt.log
+
+      - name: Extract Microsoft runtime libraries and package the IPA
+        run: |
+          bash scripts/build/prepare-vcruntime.sh 2>&1 | tee build-logs/vcruntime.log
+          bash scripts/build/package-ipa.sh 2>&1 | tee build-logs/package.log
+          shasum -a 256 dist/Madeira.ipa | tee dist/Madeira.ipa.sha256
+          {
+            echo 'Source: JMRBDev/Madeira'
+            echo 'Commit: ef496822ca427b4b000eaf7c78d3a570e23182e1'
+            echo 'Minimum iPadOS: 18.0'
+            echo 'The IPA requires personal development signing and JIT activation.'
+            echo 'Packaging success is not an on-device gameplay test.'
+          } > dist/BUILD-INFO.txt
+
+      - name: Save installable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-iPad-IPA
+          path: |
+            source/dist/Madeira.ipa
+            source/dist/Madeira.ipa.sha256
+            source/dist/BUILD-INFO.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Save diagnostic logs even when compilation fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-build-logs
+          path: |
+            source/build-logs/
+            source/build/**/*.err
+            source/build/**/*configure.log
+            source/build/**/*make.log
+            source/wine/build-macos/config.log
+            source/wine/build-arm64ec/config.log
+          if-no-files-found: warn
+          retention-days: 7
