@@ -18,7 +18,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 350
     env:
-      JOBS: '2'
+      JOBS: '3'
       HOMEBREW_NO_AUTO_UPDATE: '1'
       HOMEBREW_NO_INSTALL_CLEANUP: '1'
     defaults:
@@ -40,6 +40,7 @@ jobs:
           mkdir -p build-logs
           {
             uname -a
+            sysctl -n hw.ncpu hw.memsize
             xcodebuild -version
             xcrun --sdk iphoneos --show-sdk-version
             df -h .
@@ -85,8 +86,50 @@ jobs:
           old = '"$ROOT/build/freetype-ios/build.sh"'
           assert text.count(old) == 1
           p.write_text(text.replace(old, 'bash ' + old))
+          p = Path('scripts/build/build-llvm-ios.sh')
+          text = p.read_text()
+          # The upstream patch changed an earlier Darwin check, leaving the
+          # actual dead-strip branch unchanged. Patch both exact checks.
+          text = text.replace("s.replace(old, 'MATCHES \"Darwin|iOS\"', 1)", "s.replace(old, 'MATCHES \"Darwin|iOS\"')")
+          old = 'if compgen -G "$IOS/lib/libLLVM*.a" >/dev/null; then'
+          assert old in text
+          text = text.replace(old, 'if [[ -f "$IOS/.madeira-complete-v2" ]]; then')
+          import re
+          meson = Path('research/dxmt/src/airconv/meson.build').read_text()
+          targets = list(dict.fromkeys(re.findall(r"-l(LLVM[A-Za-z0-9_]+)", meson)))
+          assert 'LLVMPasses' in targets and 'LLVMBitWriter' in targets
+          old = 'cmake --build "$IOS" --parallel "$JOBS"'
+          assert text.count(old) == 1
+          text = text.replace(old, old + ' --target ' + ' '.join(targets))
+          text += '\n' + '\n'.join('test -s "$IOS/lib/lib' + target + '.a"' for target in targets)
+          text += '\ntouch "$IOS/.madeira-complete-v2"\n'
+          p.write_text(text)
+          p = Path('.') / 'app/Madeira/ContentView.swift'
+          text = p.read_text(encoding='utf-8')
+          blocks = [
+              ('''        if #available(iOS 26.0, *) {
+                      Circle().fill(.clear).glassEffect(.regular, in: Circle())
+                  } else {
+                      Circle().fill(.ultraThinMaterial)
+                  }''', '        Circle().fill(.ultraThinMaterial)'),
+              ('''        if #available(iOS 26.0, *) {
+                      if circle { Circle().fill(.clear).glassEffect(.regular, in: Circle()) }
+                      else { RoundedRectangle(cornerRadius: 18).fill(.clear)
+                               .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18)) }
+                  } else {
+                      if circle { Circle().fill(.ultraThinMaterial) }
+                      else { RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial) }
+                  }''', '''        if circle { Circle().fill(.ultraThinMaterial) }
+                  else { RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial) }'''),
+          ]
+          for old, fallback in blocks:
+              assert text.count(old) == 1
+              replacement = '        #if compiler(>=6.2)\n' + old + '\n        #else\n' + fallback + '\n        #endif'
+              text = text.replace(old, replacement)
+          p.write_text(text, encoding='utf-8')
+          print('Guarded two iOS 26 glass-effect branches; kept their existing material fallbacks.')
           PY
-          git diff -- scripts/build/ > build-logs/build-script.patch
+          git diff -- scripts/build/ app/Madeira/ContentView.swift > build-logs/build-script.patch
           git -C FEX diff > build-logs/fex-ios.patch
 
       - name: Install build tools and check bundled resources
@@ -137,7 +180,22 @@ jobs:
           path: source/FEX/build-ios
           key: macos15-arm64-xcode16-ef49682-fex-ios-static-v2
 
+      - name: Restore completed iOS support libraries
+        id: support-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            source/app/Madeira/libgmp.a
+            source/app/Madeira/libnettle.a
+            source/app/Madeira/libhogweed.a
+            source/app/Madeira/libgnutls.a
+            source/app/Madeira/libwineserver.a
+            source/app/Madeira/libntdll_unix.a
+            source/app/Madeira/libwin32u_unix.a
+          key: macos15-arm64-xcode16-ef49682-support-v1
+
       - name: Build iOS support libraries
+        if: steps.support-cache.outputs.cache-hit != 'true'
         run: |
           bash scripts/build/build-freetype-ios.sh 2>&1 | tee build-logs/freetype.log
           bash build/gnutls-ios/build.sh 2>&1 | tee build-logs/gnutls.log
@@ -147,7 +205,21 @@ jobs:
           bash build/ntdll-unix/build.sh 2>&1 | tee build-logs/ntdll.log
           bash build/win32u-unix/build.sh 2>&1 | tee build-logs/win32u.log
 
-      - name: Restore completed LLVM build
+      - name: Cache completed iOS support libraries
+        if: steps.support-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            source/app/Madeira/libgmp.a
+            source/app/Madeira/libnettle.a
+            source/app/Madeira/libhogweed.a
+            source/app/Madeira/libgnutls.a
+            source/app/Madeira/libwineserver.a
+            source/app/Madeira/libntdll_unix.a
+            source/app/Madeira/libwin32u_unix.a
+          key: macos15-arm64-xcode16-ef49682-support-v1
+
+      - name: Restore LLVM build progress
         id: llvm-cache
         uses: actions/cache/restore@v4
         with:
@@ -155,20 +227,22 @@ jobs:
             source/toolchains/llvm-project
             source/toolchains/llvm-host-build
             source/toolchains/llvm-ios-build
-          key: macos15-arm64-xcode16-ef49682-llvm15-ios-v1
+          key: macos15-arm64-xcode16-ef49682-llvm15-static-v2-${{ github.run_id }}
+          restore-keys: macos15-arm64-xcode16-ef49682-llvm15-static-v2-
 
       - name: Build LLVM for the graphics translator
+        id: llvm-build
         run: bash scripts/build/build-llvm-ios.sh 2>&1 | tee build-logs/llvm.log
 
-      - name: Cache completed LLVM build
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+      - name: Save LLVM progress even if compilation fails
+        if: always() && (steps.llvm-build.outcome == 'success' || steps.llvm-build.outcome == 'failure')
         uses: actions/cache/save@v4
         with:
           path: |
             source/toolchains/llvm-project
             source/toolchains/llvm-host-build
             source/toolchains/llvm-ios-build
-          key: macos15-arm64-xcode16-ef49682-llvm15-ios-v1
+          key: macos15-arm64-xcode16-ef49682-llvm15-static-v2-${{ github.run_id }}
 
       - name: Build Metal shaders and DXMT
         run: |
