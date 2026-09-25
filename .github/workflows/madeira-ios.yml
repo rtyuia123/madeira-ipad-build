@@ -87,7 +87,11 @@ jobs:
           text = p.read_text()
           old = 'cmake --build "$BUILD" --parallel "$JOBS"'
           assert text.count(old) == 1
-          p.write_text(text.replace(old, old + ' --target FEXCore FEXCore_Base fmt cephes_128bit'))
+          text = text.replace(old, old + ' --target FEXCore FEXCore_Base fmt cephes_128bit JemallocLibs')
+          old = 'if [[ -f "$OUT" ]]; then'
+          assert text.count(old) == 1
+          text = text.replace(old, 'if [[ -f "$OUT" && -f "$BUILD/FEXCore/Source/libJemallocLibs.a" ]]; then')
+          p.write_text(text)
           p = Path('scripts/build/build-freetype-ios.sh')
           text = p.read_text()
           old = '"$ROOT/build/freetype-ios/build.sh"'
@@ -175,7 +179,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: source/FEX/build-ios
-          key: macos15-arm64-xcode16-ef49682-fex-ios-static-v2
+          key: macos15-arm64-xcode16-ef49682-fex-ios-static-v3
+          restore-keys: macos15-arm64-xcode16-ef49682-fex-ios-static-v2
 
       - name: Build the FEX CPU translator for iOS
         run: bash scripts/build/build-fex-ios.sh 2>&1 | tee build-logs/fex.log
@@ -185,7 +190,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: source/FEX/build-ios
-          key: macos15-arm64-xcode16-ef49682-fex-ios-static-v2
+          key: macos15-arm64-xcode16-ef49682-fex-ios-static-v3
 
       - name: Restore completed iOS support libraries
         id: support-cache
