@@ -189,7 +189,7 @@ jobs:
             2>&1 | tee build-logs/fex-arm64ec-configure.log
           cmake --build FEX/build-arm64ec-m1 --target arm64ecfex --parallel "$JOBS" \
             2>&1 | tee build-logs/fex-arm64ec-build.log
-          DLL=FEX/build-arm64ec-m1/Source/Windows/ARM64EC/libarm64ecfex.dll
+          DLL=FEX/build-arm64ec-m1/Bin/libarm64ecfex.dll
           test -s "$DLL"
           cp "$DLL" app/Madeira/arm64ec-windows/libarm64ecfex.dll
           shasum -a 256 "$DLL" | tee build-logs/fex-arm64ec.sha256
