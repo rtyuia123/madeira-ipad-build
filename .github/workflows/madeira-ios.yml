@@ -54,6 +54,31 @@ jobs:
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
+      - name: Apply narrow iOS build fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('FEX/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp')
+          text = p.read_text()
+          start = text.index('  MEMORY_BASIC_INFORMATION mbi {};')
+          end_marker = '                    mbi.Protect, type, mbi.State);'
+          end = text.index(end_marker, start) + len(end_marker)
+          windows_log = text[start:end]
+          portable_log = '''  LogMan::Msg::EFmt("[caspal128] MISALIGNED-UNSUPPORTED Size={} addrReg=x{} addr={:#x} misalign={}",
+                              Size, AddressReg, GPRs[AddressReg], GPRs[AddressReg] & 15);'''
+          text = text[:start] + '#if defined(_WIN32)\n' + windows_log + '\n#else\n' + portable_log + '\n#endif' + text[end:]
+          p.write_text(text)
+          p = Path('scripts/build/build-wine.sh')
+          text = p.read_text()
+          old = 'make -C "$WINE/build-macos" -j"$JOBS"'
+          assert text.count(old) == 1
+          # The iOS build consumes host tools and generated headers. Its PE
+          # modules are already present in the pinned source's app resources.
+          p.write_text(text.replace(old, old + ' __tooldeps__ include/all'))
+          PY
+          git diff -- scripts/build/build-wine.sh > build-logs/build-script.patch
+          git -C FEX diff > build-logs/fex-ios.patch
+
       - name: Install build tools and check bundled resources
         run: |
           brew install cmake ninja meson pkg-config autoconf automake libtool bison flex sevenzip llvm 2>&1 | tee build-logs/dependencies.log
@@ -64,11 +89,43 @@ jobs:
       - name: Prepare the Windows cross compiler
         run: bash scripts/build/setup-llvm-mingw.sh 2>&1 | tee build-logs/mingw.log
 
+      - name: Restore completed Wine tools
+        id: wine-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            source/wine/build-macos
+            source/wine/build-arm64ec
+          key: macos15-arm64-xcode16-ef49682-wine-tools-v1
+
       - name: Build Wine host tools and headers
         run: bash scripts/build/build-wine.sh 2>&1 | tee build-logs/wine.log
 
+      - name: Cache completed Wine tools
+        if: steps.wine-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            source/wine/build-macos
+            source/wine/build-arm64ec
+          key: macos15-arm64-xcode16-ef49682-wine-tools-v1
+
+      - name: Restore completed FEX build
+        id: fex-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: source/FEX/build-ios
+          key: macos15-arm64-xcode16-ef49682-fex-ios-logfix-v1
+
       - name: Build the FEX CPU translator for iOS
         run: bash scripts/build/build-fex-ios.sh 2>&1 | tee build-logs/fex.log
+
+      - name: Cache completed FEX build
+        if: steps.fex-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: source/FEX/build-ios
+          key: macos15-arm64-xcode16-ef49682-fex-ios-logfix-v1
 
       - name: Build iOS support libraries
         run: |
@@ -80,8 +137,28 @@ jobs:
           bash build/ntdll-unix/build.sh 2>&1 | tee build-logs/ntdll.log
           bash build/win32u-unix/build.sh 2>&1 | tee build-logs/win32u.log
 
+      - name: Restore completed LLVM build
+        id: llvm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            source/toolchains/llvm-project
+            source/toolchains/llvm-host-build
+            source/toolchains/llvm-ios-build
+          key: macos15-arm64-xcode16-ef49682-llvm15-ios-v1
+
       - name: Build LLVM for the graphics translator
         run: bash scripts/build/build-llvm-ios.sh 2>&1 | tee build-logs/llvm.log
+
+      - name: Cache completed LLVM build
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            source/toolchains/llvm-project
+            source/toolchains/llvm-host-build
+            source/toolchains/llvm-ios-build
+          key: macos15-arm64-xcode16-ef49682-llvm15-ios-v1
 
       - name: Build Metal shaders and DXMT
         run: |
