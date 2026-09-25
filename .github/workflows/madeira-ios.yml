@@ -191,7 +191,7 @@ jobs:
             2>&1 | tee build-logs/fex-arm64ec-build.log
           DLL=FEX/build-arm64ec-m1/Bin/libarm64ecfex.dll
           test -s "$DLL"
-          cp "$DLL" app/Madeira/arm64ec-windows/libarm64ecfex.dll
+          cp "$DLL" app/Madeira/arm64ec-windows/xtajit64.dll
           shasum -a 256 "$DLL" | tee build-logs/fex-arm64ec.sha256
           git -C FEX diff > build-logs/fex-ios.patch
           git -C FEX/External/rpmalloc diff > build-logs/rpmalloc-m1.patch
