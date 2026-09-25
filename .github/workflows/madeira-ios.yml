@@ -56,7 +56,8 @@ jobs:
 
       - name: Install build tools and check bundled resources
         run: |
-          brew install cmake ninja meson pkg-config autoconf automake libtool bison flex sevenzip llvm xxd 2>&1 | tee build-logs/dependencies.log
+          brew install cmake ninja meson pkg-config autoconf automake libtool bison flex sevenzip llvm 2>&1 | tee build-logs/dependencies.log
+          command -v xxd
           bash tools/check-prefix-template.sh app/Madeira/prefix-template.tar.gz
           xcodebuild -list -project app/Madeira.xcodeproj
 
