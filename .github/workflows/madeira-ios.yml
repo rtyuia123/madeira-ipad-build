@@ -80,8 +80,13 @@ jobs:
           old = 'cmake --build "$BUILD" --parallel "$JOBS"'
           assert text.count(old) == 1
           p.write_text(text.replace(old, old + ' --target FEXCore FEXCore_Base fmt cephes_128bit'))
+          p = Path('scripts/build/build-freetype-ios.sh')
+          text = p.read_text()
+          old = '"$ROOT/build/freetype-ios/build.sh"'
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, 'bash ' + old))
           PY
-          git diff -- scripts/build/build-wine.sh scripts/build/build-fex-ios.sh > build-logs/build-script.patch
+          git diff -- scripts/build/ > build-logs/build-script.patch
           git -C FEX diff > build-logs/fex-ios.patch
 
       - name: Install build tools and check bundled resources
