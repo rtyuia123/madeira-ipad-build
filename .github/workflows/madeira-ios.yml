@@ -153,6 +153,49 @@ jobs:
       - name: Prepare the Windows cross compiler
         run: bash scripts/build/setup-llvm-mingw.sh 2>&1 | tee build-logs/mingw.log
 
+      - name: Build experimental ARM64EC translator for constrained iPads
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('FEX/External/rpmalloc/rpmalloc/rpmalloc.c')
+          s = p.read_text()
+          start = s.index('\tif (!ios_fex_band_base) {', s.index('ios_fex_band_select('))
+          end = s.index('\n\tif (ios_fex_band_base) {', start)
+          fallback = s[start:end]
+          old = 'base = 0x0800000000ULL; base < 0x1000000000ULL'
+          assert fallback.count(old) == 1
+          # Keep the original high-band sweep first. Only after it fails,
+          # probe 8-12 and 12-16 GiB using the same 16 KiB + 256 MiB tests.
+          fallback = fallback.replace(old, 'base = 0x0200000000ULL; base < 0x0400000000ULL')
+          fallback = fallback.replace('[va-profile] ml753 sweep', '[va-profile] m1-lowva-v1 sweep')
+          s = s[:end] + '\n' + fallback + s[end:]
+          p.write_text(s)
+          p = Path('FEX/FEXCore/include/FEXCore/Utils/AllocatorHooks.h')
+          s = p.read_text()
+          old = '    /* Band exists but is exhausted:'
+          assert s.count(old) == 1
+          s = s.replace(old, '    if (ios_fex_band_base < 0x0800000000ULL) return nullptr;\n' + old)
+          p.write_text(s)
+          PY
+          export PATH="$ROOT/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin:$PATH"
+          cmake -S FEX -B FEX/build-arm64ec-m1 -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ROOT/FEX/Data/CMake/toolchain_mingw.cmake" \
+            -DMINGW_TRIPLE=arm64ec-w64-mingw32 \
+            -DCMAKE_BUILD_TYPE=Release -DFEX_IOS_HOST_BUILD=ON \
+            -DCMAKE_C_FLAGS=-DFEX_IOS_HOST=1 -DCMAKE_CXX_FLAGS=-DFEX_IOS_HOST=1 \
+            -DBUILD_TESTING=OFF -DBUILD_FEX_LINUX_TESTS=OFF -DBUILD_THUNKS=OFF \
+            -DBUILD_FEXCONFIG=OFF -DBUILD_STEAM_SUPPORT=OFF \
+            -DENABLE_LTO=OFF -DENABLE_CCACHE=OFF -DTUNE_CPU=generic -DTUNE_ARCH=generic \
+            2>&1 | tee build-logs/fex-arm64ec-configure.log
+          cmake --build FEX/build-arm64ec-m1 --target arm64ecfex --parallel "$JOBS" \
+            2>&1 | tee build-logs/fex-arm64ec-build.log
+          DLL=FEX/build-arm64ec-m1/Source/Windows/ARM64EC/libarm64ecfex.dll
+          test -s "$DLL"
+          cp "$DLL" app/Madeira/arm64ec-windows/libarm64ecfex.dll
+          shasum -a 256 "$DLL" | tee build-logs/fex-arm64ec.sha256
+          git -C FEX diff > build-logs/fex-ios.patch
+          git -C FEX/External/rpmalloc diff > build-logs/rpmalloc-m1.patch
+
       - name: Restore completed Wine tools
         id: wine-cache
         uses: actions/cache/restore@v4
@@ -303,3 +346,4 @@ jobs:
             source/wine/build-arm64ec/config.log
           if-no-files-found: warn
           retention-days: 7
+
