@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - '.github/workflows/madeira-ios.yml'
+      - 'scripts/prepare-vcruntime.py'
 
 permissions:
   contents: read
@@ -26,6 +27,12 @@ jobs:
         shell: bash
         working-directory: source
     steps:
+      - name: Check out build configuration
+        uses: actions/checkout@v4
+        with:
+          path: build-config
+          persist-credentials: false
+
       - name: Check out the IPA build contribution at a fixed revision
         uses: actions/checkout@v4
         with:
@@ -254,12 +261,13 @@ jobs:
 
       - name: Extract Microsoft runtime libraries and package the IPA
         run: |
-          bash scripts/build/prepare-vcruntime.sh 2>&1 | tee build-logs/vcruntime.log
+          python3 "$GITHUB_WORKSPACE/build-config/scripts/prepare-vcruntime.py" "$ROOT" 2>&1 | tee build-logs/vcruntime.log
           bash scripts/build/package-ipa.sh 2>&1 | tee build-logs/package.log
           shasum -a 256 dist/Madeira.ipa | tee dist/Madeira.ipa.sha256
           {
             echo 'Source: JMRBDev/Madeira'
             echo 'Commit: ef496822ca427b4b000eaf7c78d3a570e23182e1'
+            echo "Build configuration: $GITHUB_SHA"
             echo 'Minimum iPadOS: 18.0'
             echo 'The IPA requires personal development signing and JIT activation.'
             echo 'Packaging success is not an on-device gameplay test.'
